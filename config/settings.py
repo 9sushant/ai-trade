@@ -15,7 +15,7 @@ class TradingConfig:
     MAX_CAPITAL = float(os.getenv("MAX_CAPITAL", 50000))
     MAX_RISK_PER_TRADE = float(os.getenv("MAX_RISK_PER_TRADE", 500))
     DAILY_PROFIT_TARGET = float(os.getenv("DAILY_PROFIT_TARGET", 500))
-    MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", 1000))
+    MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", 100))
     MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", 5))
     STOP_LOSS_PCT = 1.5  # 1.5% stop loss
     TARGET_PCT = 2.5  # 2.5% target

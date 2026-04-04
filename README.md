@@ -36,7 +36,7 @@ ANGEL_TOTP_SECRET=your_totp_base32_secret_here
 MAX_CAPITAL=50000
 MAX_RISK_PER_TRADE=500
 DAILY_PROFIT_TARGET=500
-MAX_DAILY_LOSS=1000
+MAX_DAILY_LOSS=100
 MAX_POSITIONS=5
 ```
 
@@ -98,7 +98,7 @@ Fully automated trading loop:
 - Places bracket orders (entry + SL + target) automatically
 - Monitors positions every 5 minutes
 - Auto-exits at target/stop-loss
-- Stops when ₹500 profit target OR ₹1000 loss limit is hit
+- Stops when ₹500 profit target OR ₹100 loss limit is hit
 - Square-off all intraday positions by 3:15 PM
 
 ---
@@ -148,7 +148,7 @@ Per-trade rules:
 
 Daily rules:
 - Stop trading when daily profit ≥ ₹500
-- Stop trading when daily loss ≥ ₹1000
+- Stop trading when daily loss ≥ ₹100
 - Max 5 open positions at once
 
 ### Options Analysis
