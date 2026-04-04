@@ -234,6 +234,25 @@ def run_interactive():
             logger.error(f"Interactive mode error: {e}")
 
 
+def run_backtest(period: str = "1y", symbols_count: int = 20):
+    """Run backtest on historical data."""
+    from dashboard.terminal_ui import print_banner
+    from backtest.engine import BacktestEngine
+    from backtest.display import print_backtest_results
+
+    print_banner()
+    console.print("[bold magenta]BACKTEST MODE[/]")
+    console.print(f"[dim]Period: {period} | Symbols: top {symbols_count} Nifty stocks[/]\n")
+
+    from config.settings import MarketConfig
+    symbols = MarketConfig.NIFTY_50_SYMBOLS[:symbols_count]
+
+    console.print("[bold]Running backtest... (this may take a few minutes)[/]\n")
+    engine = BacktestEngine()
+    results = engine.run(symbols=symbols, period=period)
+    print_backtest_results(results)
+
+
 def run_auto_trading():
     """Auto trading mode."""
     print_banner()
@@ -269,6 +288,9 @@ def main():
     parser.add_argument("--scan", action="store_true", help="Scan mode - show recommendations only")
     parser.add_argument("--auto", action="store_true", help="Auto trading mode")
     parser.add_argument("--top10", action="store_true", help="Show top 10 picks and exit")
+    parser.add_argument("--backtest", action="store_true", help="Backtest strategy on historical data")
+    parser.add_argument("--period", type=str, default="1y", help="Backtest period (e.g., 6mo, 1y, 2y)")
+    parser.add_argument("--symbols", type=int, default=20, help="Number of Nifty 50 symbols to backtest")
     args = parser.parse_args()
 
     # Create logs directory
@@ -278,6 +300,8 @@ def main():
         run_scan_only()
     elif args.top10:
         run_top10()
+    elif args.backtest:
+        run_backtest(period=args.period, symbols_count=args.symbols)
     elif args.auto:
         run_auto_trading()
     else:
