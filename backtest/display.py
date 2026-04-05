@@ -56,6 +56,8 @@ def print_backtest_results(results: dict):
     total = s["total_trades"]
     exit_table.add_row("Target Hit", str(exits["target_hit"]),
                         f"[green]{exits['target_hit']/total*100:.1f}%[/]")
+    exit_table.add_row("Trailing Stop", str(exits.get("trailing_stop", 0)),
+                        f"[cyan]{exits.get('trailing_stop', 0)/total*100:.1f}%[/]")
     exit_table.add_row("Stop Loss", str(exits["stop_loss"]),
                         f"[red]{exits['stop_loss']/total*100:.1f}%[/]")
     exit_table.add_row("Time Exit", str(exits["time_exit"]),

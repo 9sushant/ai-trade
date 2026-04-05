@@ -2,6 +2,9 @@ import pandas as pd
 from data.fetcher import DataFetcher
 from analysis.technical import TechnicalAnalyzer
 from analysis.patterns import PatternDetector
+from analysis.fundamental import FundamentalAnalyzer
+from analysis.sentiment import SentimentAnalyzer
+from analysis.quant import QuantAnalyzer
 from config.settings import MarketConfig, TradingConfig
 from utils.logger import logger
 
@@ -13,6 +16,9 @@ class StockScreener:
         self.fetcher = DataFetcher()
         self.analyzer = TechnicalAnalyzer()
         self.pattern_detector = PatternDetector()
+        self.fundamental_analyzer = FundamentalAnalyzer()
+        self.sentiment_analyzer = SentimentAnalyzer()
+        self.quant_analyzer = QuantAnalyzer()
 
     def scan_all_stocks(self, symbols: list[str] | None = None) -> list[dict]:
         if symbols is None:
@@ -204,10 +210,60 @@ class StockScreener:
         signals = self.analyzer.get_latest_signals(daily)
         patterns = self.pattern_detector.detect_all(daily)
 
+        # ── Fundamental analysis ──────────────────────────────────────────
+        try:
+            fund_score = self.fundamental_analyzer.score(symbol)
+            fund_label = self.fundamental_analyzer.label(symbol)
+            fund_data  = self.fundamental_analyzer.get_fundamentals(symbol)
+        except Exception:
+            fund_score, fund_label, fund_data = 0.0, "N/A", {}
+
+        # ── Sentiment analysis ────────────────────────────────────────────
+        try:
+            sent_score = self.sentiment_analyzer.score(symbol)
+            sent_label = self.sentiment_analyzer.label(symbol)
+            headlines  = self.sentiment_analyzer.get_headlines(symbol, n=3)
+        except Exception:
+            sent_score, sent_label, headlines = 0.0, "N/A", []
+
+        # ── Quantitative analysis ─────────────────────────────────────────
+        try:
+            quant_report = self.quant_analyzer.full_report(daily)
+        except Exception:
+            quant_report = {}
+
+        # ── Combined score: Technical 55% + Fundamental 20% + Sentiment 10% + Quant 15%
+        tech_score  = signals.get("composite_score", 0)
+        combined    = (
+            0.55 * tech_score
+            + 0.20 * fund_score
+            + 0.10 * sent_score
+            + 0.15 * quant_report.get("quant_score", 0)
+        )
+
         return {
             "symbol": symbol,
             **signals,
-            "patterns": [p["name"] for p in patterns["patterns"]],
-            "support": patterns["support"],
-            "resistance": patterns["resistance"],
+            "patterns":          [p["name"] for p in patterns["patterns"]],
+            "support":           patterns["support"],
+            "resistance":        patterns["resistance"],
+            # Fundamental
+            "fund_score":        round(fund_score, 1),
+            "fund_label":        fund_label,
+            "pe_ratio":          fund_data.get("pe_ratio"),
+            "roe":               fund_data.get("roe"),
+            "debt_to_equity":    fund_data.get("debt_to_equity"),
+            "earnings_growth":   fund_data.get("earnings_growth"),
+            # Sentiment
+            "sent_score":        round(sent_score, 1),
+            "sent_label":        sent_label,
+            "headlines":         headlines,
+            # Quant
+            "quant_score":       quant_report.get("quant_score", 0),
+            "momentum_score":    quant_report.get("momentum_score", 0),
+            "mean_rev_z":        quant_report.get("mean_rev_z", 0),
+            "sharpe_60":         quant_report.get("sharpe_60", 0),
+            "beta_60":           quant_report.get("beta_60", 1),
+            # Combined
+            "combined_score":    round(combined, 1),
         }
