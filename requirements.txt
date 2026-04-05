@@ -17,8 +17,9 @@ xgboost>=2.0.0
 scikit-learn>=1.3.0
 hmmlearn>=0.3.0
 statsmodels>=0.14.0
+scipy>=1.11.0
 
-# Deep learning (optional — LSTM model)
+# Deep learning (optional)
 torch>=2.0.0
 
 # NLP / Sentiment
@@ -28,8 +29,9 @@ vaderSentiment>=3.3.2
 # Volatility
 arch>=6.2.0
 
-# AutoML
+# AutoML / Hyperparameter optimization
 optuna>=3.4.0
+scikit-optimize>=0.9.0
 
 # Portfolio optimization
 PyPortfolioOpt>=1.5.5
@@ -37,12 +39,21 @@ PyPortfolioOpt>=1.5.5
 # Explainability
 shap>=0.43.0
 
+# Trends
+pytrends>=4.9.2
+
+# Options / Causal
+scipy>=1.11.0
+
 # API / Dashboard
 fastapi>=0.104.0
 uvicorn>=0.24.0
 streamlit>=1.28.0
 plotly>=5.17.0
 
-# Storage / utilities
+# Storage / Cache
 joblib>=1.3.0
+redis>=5.0.0
+
+# Broker
 kiteconnect>=5.0.1
