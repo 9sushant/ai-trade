@@ -8,8 +8,22 @@ from analysis.fundamental import FundamentalAnalyzer
 from analysis.quant import QuantAnalyzer
 from analysis.ensemble import EnsembleSignalModel
 from analysis.hmm_regime import HMMRegimeDetector
+from analysis.volatility import GARCHVolatilityForecaster
+from analysis.cross_asset import CrossAssetSignals
+from analysis.sector_rotation import SectorRotationTracker
+from analysis.fno_expiry import FNOExpiryAnalyzer
+from analysis.news_sentiment import NewsSentimentAnalyzer
+from analysis.regime_models import RegimeSpecificModels
+from ml.lstm_model import LSTMModel
+from ml.rl_dqn import DQNAgent
+from ml.drift_detector import ModelDriftDetector
+from ml.explainer import SignalExplainer
 from risk.var_calculator import VaRCalculator
 from risk.dynamic_risk import DynamicRiskManager
+from risk.cvar import CVaRCalculator
+from risk.monte_carlo import MonteCarloSimulator
+from risk.portfolio_optimizer import PortfolioOptimizer
+from backtest.execution import ExecutionModel
 from config.settings import TradingConfig, MarketConfig
 from utils.logger import logger
 from utils.helpers import format_currency
@@ -112,13 +126,28 @@ class BacktestEngine:
         self.pattern_detector     = PatternDetector()
         self.fundamental_analyzer = FundamentalAnalyzer()
         self.quant_analyzer       = QuantAnalyzer()
-        self.ml_model             = EnsembleSignalModel()   # upgraded to ensemble
+        self.ml_model             = EnsembleSignalModel()
+        self.lstm_model           = LSTMModel()
+        self.regime_models        = RegimeSpecificModels()
         self.var_calculator       = VaRCalculator()
+        self.cvar_calculator      = CVaRCalculator()
         self.dynamic_risk         = DynamicRiskManager(
             base_risk_pct = (max_risk_per_trade or TradingConfig.MAX_RISK_PER_TRADE)
                             / (capital or TradingConfig.MAX_CAPITAL)
         )
-        self.hmm_detector:    dict[str, HMMRegimeDetector] = {}   # per-symbol HMM
+        self.portfolio_optimizer  = PortfolioOptimizer()
+        self.monte_carlo          = MonteCarloSimulator(n_simulations=2000)
+        self.execution_model      = ExecutionModel()
+        self.garch                = GARCHVolatilityForecaster()
+        self.cross_asset          = CrossAssetSignals()
+        self.sector_rotation      = SectorRotationTracker()
+        self.fno_expiry           = FNOExpiryAnalyzer()
+        self.news_sentiment       = NewsSentimentAnalyzer()
+        self.drift_detector       = ModelDriftDetector(
+            baseline_win_rate=0.65, baseline_accuracy=0.60
+        )
+        self.explainer            = SignalExplainer()
+        self.hmm_detector:    dict[str, HMMRegimeDetector] = {}
 
         self._nifty_df:       pd.DataFrame | None = None
         self._weekly_data:    dict[str, pd.DataFrame] = {}
@@ -169,10 +198,27 @@ class BacktestEngine:
         if not enriched_dfs:
             return {"error": "No data fetched for any symbol"}
 
-        # ── Train ensemble ML model (cross-symbol) ────────────────────
+        # ── Train ensemble + LSTM ML models ──────────────────────────
         if self.use_ml_filter:
             logger.info("Training Ensemble ML model...")
             self.ml_model.fit(list(enriched_dfs.values()), verbose=True)
+            logger.info("Training LSTM model...")
+            self.lstm_model.fit(list(enriched_dfs.values()), verbose=True)
+            logger.info("Training regime-specific models...")
+            regime_labels = [
+                self._get_market_regime(df.index[-1]) for df in enriched_dfs.values()
+            ]
+            self.regime_models.fit(list(enriched_dfs.values()), regime_labels, verbose=False)
+
+        # ── GARCH volatility forecasts ────────────────────────────────
+        logger.info("Fitting GARCH volatility models...")
+        self.garch.fit_all(enriched_dfs)
+
+        # ── Cross-asset + sector rotation signals ─────────────────────
+        try:
+            self.sector_rotation.refresh()
+        except Exception:
+            pass
 
         # ── Precompute correlation matrix ─────────────────────────────
         if self.use_correlation_filter:
@@ -209,6 +255,32 @@ class BacktestEngine:
         all_trades.sort(key=lambda t: t["entry_date"])
         portfolio_result = self._simulate_portfolio(all_trades)
         summary = self._generate_summary(portfolio_result, symbol_results)
+
+        # ── Monte Carlo risk analysis ─────────────────────────────────
+        try:
+            mc_result = self.monte_carlo.run(
+                all_trades, self.initial_capital,
+                min_capital=self.initial_capital * 0.5,
+            )
+            summary["monte_carlo"] = {
+                "risk_of_ruin_pct":       mc_result["risk_of_ruin_pct"],
+                "prob_loss":              mc_result["prob_loss"],
+                "final_equity_p5":        mc_result["final_equity"]["p5"],
+                "final_equity_p50":       mc_result["final_equity"]["p50"],
+                "final_equity_p95":       mc_result["final_equity"]["p95"],
+                "prob_mdd_exceeds_20pct": mc_result["prob_mdd_exceeds_threshold"],
+            }
+        except Exception:
+            pass
+
+        # ── Drift detector: set baseline ──────────────────────────────
+        try:
+            actuals = [1 if t["pnl"] > 0 else 0 for t in all_trades]
+            self.drift_detector.set_baseline(
+                [0.55] * len(actuals), actuals   # approximate baseline probs
+            )
+        except Exception:
+            pass
 
         # ── Persist to DB ─────────────────────────────────────────────
         if self.save_to_db:
@@ -473,20 +545,39 @@ class BacktestEngine:
                 if mom > 0.3:
                     i += 1; continue
 
-            # ── ML signal filter (only on out-of-sample bars) ─────────
+            # ── ML signal filter (ensemble + LSTM combined) ───────────
             if self.use_ml_filter and self.ml_model.is_fitted and i >= ml_cutoff:
-                prob = self.ml_model.predict_proba(row, df, i)
-                if prob < self.ml_prob_threshold:
+                ensemble_prob = self.ml_model.predict_proba(row, df, i)
+                lstm_prob     = self.lstm_model.predict_proba(row, df, i) \
+                                if self.lstm_model.is_fitted else ensemble_prob
+                regime_prob   = self.regime_models.predict_proba(regime, row, df, i) \
+                                if self.regime_models.is_fitted else ensemble_prob
+                # Weighted average: 50% ensemble + 30% LSTM + 20% regime-specific
+                combined_prob = 0.50 * ensemble_prob + 0.30 * lstm_prob + 0.20 * regime_prob
+                self.drift_detector.record_prediction(combined_prob)
+                if combined_prob < self.ml_prob_threshold:
                     i += 1; continue
 
-            # ── Entry price and SL / target ───────────────────────────
+            # ── F&O expiry filter ─────────────────────────────────────
+            if self.fno_expiry.should_avoid(df.index[i].date() if hasattr(df.index[i], "date") else None):
+                i += 1; continue
+
+            # ── Sector rotation filter ────────────────────────────────
+            if not self.sector_rotation.is_in_leading_sector(symbol, top_n=6):
+                i += 1; continue
+
+            # ── GARCH-adjusted SL/target multipliers ──────────────────
+            garch_sl_mult  = self.garch.sl_multiplier(symbol, sl_mult)
+            garch_tgt_mult = self.garch.target_multiplier(symbol, tgt_mult)
+
+            # ── Entry price and SL / target (GARCH-adjusted) ─────────
             entry_price = float(row["close"])
             if direction == "BUY":
-                stop_loss = entry_price - sl_mult * atr
-                target    = entry_price + tgt_mult * atr
+                stop_loss = entry_price - garch_sl_mult * atr
+                target    = entry_price + garch_tgt_mult * atr
             else:
-                stop_loss = entry_price + sl_mult * atr
-                target    = entry_price - tgt_mult * atr
+                stop_loss = entry_price + garch_sl_mult * atr
+                target    = entry_price - garch_tgt_mult * atr
 
             risk   = abs(entry_price - stop_loss)
             reward = abs(target - entry_price)
@@ -523,15 +614,27 @@ class BacktestEngine:
                 dynamic_scale = self.dynamic_risk.get_risk_multiplier()
                 dynamic_scale *= self.dynamic_risk.volatility_adjustment(df)
 
+            # Sector rotation bias (+/-20% based on leading/lagging sector)
+            sector_scale = 1.0 + self.sector_rotation.sector_bias(symbol)
+
+            # F&O expiry size factor
+            expiry_scale = self.fno_expiry.size_factor(
+                df.index[i].date() if hasattr(df.index[i], "date") else None
+            )
+
             quantity = max(1, int(base_qty * beta_scale * fund_scale
-                                  * kelly_scale * dynamic_scale))
+                                  * kelly_scale * dynamic_scale
+                                  * sector_scale * expiry_scale))
 
             # VaR override: cap quantity so position VaR ≤ 2% of capital
             if self.use_var_sizing:
-                var_qty = self.var_calculator.var_adjusted_quantity(
+                var_qty  = self.var_calculator.var_adjusted_quantity(
                     df, self.initial_capital, entry_price, stop_loss
                 )
-                quantity = min(quantity, var_qty)
+                cvar_qty = self.cvar_calculator.cvar_adjusted_quantity(
+                    df, self.initial_capital, entry_price
+                )
+                quantity = min(quantity, var_qty, cvar_qty)
 
             # Cap at 30% of capital
             max_qty  = int((self.initial_capital * 0.3) / entry_price)
